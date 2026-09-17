@@ -1,0 +1,18 @@
+import { chromium } from "playwright";
+const BASE = "http://localhost:3000";
+const SHOTS = "C:/Users/student/AppData/Local/Temp/preview-shots";
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } });
+const errors = [];
+page.on("pageerror", (e) => errors.push(String(e)));
+page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+await page.goto(BASE + "/login", { waitUntil: "domcontentloaded", timeout: 90000 });
+await page.fill('input[autocomplete="email"]', "admin@bisb.local", { timeout: 60000 });
+await page.fill('input[autocomplete="current-password"]', "AdminPass123!");
+await page.click('button[type="submit"]');
+await page.waitForFunction(() => location.pathname === "/dashboard", null, { timeout: 90000 });
+await page.waitForSelector("text=Credit Journey", { timeout: 90000 });
+await page.waitForTimeout(6000);
+await page.screenshot({ path: `${SHOTS}/15-dashboard-photo.png`, fullPage: true });
+console.log("ERRORS:", JSON.stringify(errors));
+await browser.close();

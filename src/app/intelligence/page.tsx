@@ -99,7 +99,13 @@ function IntelligenceContent() {
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-bold">Application Flow &amp; Bottlenecks</h2>
           </div>
-          <SceneFrame height={420} label="the Application Flow" fallback={<CreditJourneyFallback stations={stations} />}>
+          <SceneFrame
+            height={420}
+            label="the Application Flow"
+            interactionHint="Drag to rotate · Scroll to zoom · Click a station or marker"
+            dark
+            fallback={<CreditJourneyFallback stations={stations} />}
+          >
             <CreditJourneyScene
               stations={stations}
               onSelectStation={(d) => router.push(`/my-work?department=${d}`)}

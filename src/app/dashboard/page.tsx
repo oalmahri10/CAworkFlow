@@ -106,15 +106,19 @@ function DashboardContent() {
         }
       >
         <div
-          className="rounded-xl p-1"
+          className="overflow-hidden rounded-xl"
           style={{
-            background:
-              "linear-gradient(180deg, #f5e2c8 0%, #e7b98f 22%, #b6789a 46%, #6c4f8e 72%, #2a1a40 100%)",
+            backgroundImage: "url(/backgrounds/executive-tower.png)",
+            backgroundSize: "cover",
+            backgroundPosition: "center 35%",
           }}
         >
           <SceneFrame
-            height={460}
+            height={560}
             label="the Credit Journey"
+            interactionHint="Drag to rotate · Scroll to zoom · Click a station or marker"
+            cameraPosition={[0, 3.4, 11.5]}
+            fov={40}
             fallback={<CreditJourneyFallback stations={stations} />}
           >
             <CreditJourneyScene
@@ -123,6 +127,7 @@ function DashboardContent() {
               onSelectMarker={goToApplication}
               resetSignal={resetSignal}
               tone="dusk"
+              photoBackdrop
             />
           </SceneFrame>
         </div>

@@ -106,7 +106,8 @@ export function SceneFrame({
             <Canvas
               dpr={dpr}
               frameloop={visible ? "always" : "never"}
-              gl={{ powerPreference: "low-power", antialias: true }}
+              gl={{ powerPreference: "low-power", antialias: true, alpha: true }}
+              style={{ background: "transparent" }}
               camera={{ position: cameraPosition, fov }}
               onCreated={({ gl }) => {
                 gl.domElement.addEventListener("webglcontextlost", (e) => {
