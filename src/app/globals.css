@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+/*
+ * BisB Credit Command design tokens.
+ *
+ * Palette is fixed by the product's visual specification:
+ *   primary purple #552988, deep violet #55267E, teal #51C1AD,
+ *   white, charcoal #333333, pale lavender, light grey,
+ *   amber for attention, red for errors/breaches.
+ *
+ * The Executive Control Tower and Credit Passport pages use the light
+ * surface tokens; Credit Intelligence uses the dark analytical-workspace
+ * tokens directly (it is a fixed design treatment for that page, not a
+ * user-togglable dark mode / prefers-color-scheme response).
+ */
+@theme {
+  --color-primary: #552988;
+  --color-primary-hover: #45216e;
+  --color-deep-violet: #55267e;
+  --color-teal: #51c1ad;
+  --color-charcoal: #333333;
+  --color-lavender: #f4effa;
+  --color-lavender-strong: #e7dcf5;
+  --color-light-grey: #f2f3f6;
+  --color-app-bg: #f7f6fb;
+  --color-amber: #f0a53c;
+  --color-danger: #e0524d;
+  --color-success: #2fae82;
+
+  --color-dark-surface: #241338;
+  --color-dark-surface-2: #2f1a49;
+  --color-dark-card: #ffffff;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  --radius-card: 1rem;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(51, 27, 90, 0.06), 0 8px 24px -12px rgba(51, 27, 90, 0.18);
+  --shadow-card-hover: 0 4px 10px rgba(51, 27, 90, 0.10), 0 16px 32px -12px rgba(51, 27, 90, 0.24);
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  background: var(--color-app-bg);
+  color: var(--color-charcoal);
+}
+
+/* Focus ring used consistently across interactive elements. */
+.focus-ring {
+  outline: none;
+}
+.focus-ring:focus-visible {
+  outline: 2px solid var(--color-teal);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.card-elevation {
+  box-shadow: var(--shadow-card);
+}
+.card-elevation:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Scrollbar styling kept subtle across the app's dense data panels. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-primary) 25%, transparent);
+  border-radius: 999px;
+}

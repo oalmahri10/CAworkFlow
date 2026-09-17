@@ -1,0 +1,388 @@
+// BisB Credit Command — data model
+//
+// Notes on modelling choices:
+// - SQLite has no native enum type. Rather than rely on Prisma's client-side
+//   enum emulation (which varies across versions), fixed vocabularies are
+//   stored as validated `String` columns. The canonical list of allowed
+//   values for each field lives in `src/lib/domain/enums.ts` and is enforced
+//   with Zod at the service layer before any write. This keeps the SQLite
+//   file directly inspectable and avoids coupling to enum-emulation behavior.
+// - All monetary amounts are stored as integer minor units (e.g. fils for
+//   BHD, which has 3 decimal places) alongside an explicit ISO currency
+//   code. See `src/lib/money.ts` for precision-aware arithmetic. Amounts are
+//   never combined across currencies.
+// - Every table that participates in the workflow carries enough audit
+//   context (actor, timestamp, reason) that a full `AuditEvent` can be
+//   derived and cross-checked, but `AuditEvent` itself remains the single
+//   source of truth for "what happened and why" across the whole system.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity, roles and sessions
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  roles        UserRoleAssignment[]
+  capabilities UserCapability[]
+  sessions     Session[]
+
+  initiatedApplications Application[]        @relation("InitiatingRm")
+  actionOwnerOn         Application[]        @relation("ActionOwner")
+  documentsUploaded     DocumentVersion[]
+  queriesAuthored       Query[]
+  queryResponses        QueryResponse[]
+  comments              Comment[]
+  notifications         Notification[]
+  workflowEventsActed   WorkflowEvent[]
+  externalMilestones    ExternalMilestone[]
+  auditEvents           AuditEvent[]
+  configVersionsCreated ConfigVersion[]
+  stageIntervalsOwned   StageInterval[]
+
+  @@index([email])
+}
+
+// One row per (user, role). A user may hold more than one functional role,
+// e.g. an RM who is also a department Approval Authority delegate.
+model UserRoleAssignment {
+  id     String @id @default(cuid())
+  userId String
+  role   String // see ROLES in src/lib/domain/enums.ts
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+}
+
+// Fine-grained, explicitly granted capabilities layered on top of roles.
+// Configuration administration does NOT imply document access — capabilities
+// such as MANAGE_CONFIG and VIEW_RESTRICTED_DOCUMENTS are granted separately.
+model UserCapability {
+  id         String   @id @default(cuid())
+  userId     String
+  capability String // see CAPABILITIES in src/lib/domain/enums.ts
+  grantedBy  String?
+  grantedAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, capability])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  userAgent String?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Applications (CA / AT) and facilities
+// ---------------------------------------------------------------------------
+
+model Application {
+  id               String   @id @default(cuid())
+  croReference     String   @unique
+  requestType      String // CA | AT
+  subtype          String // ANNUAL_REVIEW | RESCHEDULING | RESTRUCTURING | WAIVER | TEMP_EXCESS | OTHER
+  customerName     String
+  customerType     String
+  sector           String?
+  initiatingRmId   String
+  initiatingRm     User     @relation("InitiatingRm", fields: [initiatingRmId], references: [id])
+
+  currentDepartment String // CORPORATE_FINANCE | CREDIT_REVIEW | APPROVAL_AUTHORITY | CAD | OPERATIONS | COMPLETED
+  stage             String // mirrors currentDepartment for completed/terminal states
+  substage          String
+  actionOwnerId     String?
+  actionOwner       User?   @relation("ActionOwner", fields: [actionOwnerId], references: [id])
+  actionOwnerDept   String?
+
+  currency                    String
+  totalGroupExposureMinor     BigInt
+  relatedPartyExposureMinor   BigInt
+  approvalRoutingExposureMinor BigInt // derived = group + related-party, persisted for audit/history
+  facilityAmountMinor         BigInt? // individual facility amount, kept distinct from exposure
+
+  submissionAt DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Optimistic concurrency: every mutating request must supply the version
+  // it read; a mismatch is rejected as a stale edit rather than silently
+  // overwritten.
+  version Int @default(1)
+
+  facilities          Facility[]
+  exposureSnapshots   ExposureSnapshot[]
+  workflowEvents      WorkflowEvent[]
+  stageIntervals      StageInterval[]
+  reviewCycles        ReviewCycle[]
+  approvalCycles      ApprovalCycle[]
+  queries             Query[]
+  externalMilestones  ExternalMilestone[]
+  documents           DocumentVersion[]
+  comments            Comment[]
+  notifications       Notification[]
+  auditEvents         AuditEvent[]
+
+  @@index([requestType])
+  @@index([currentDepartment])
+  @@index([customerName])
+}
+
+model Facility {
+  id              String      @id @default(cuid())
+  applicationId   String
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  name            String
+  facilityType    String?
+  amountMinor     BigInt
+  currency        String
+  description     String?
+  createdAt       DateTime    @default(now())
+}
+
+// Historical exposure figures. A new snapshot is written on creation and on
+// every confirmed amendment so Amendment X-Ray can diff them precisely.
+model ExposureSnapshot {
+  id                           String      @id @default(cuid())
+  applicationId                String
+  application                  Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  totalGroupExposureMinor      BigInt
+  relatedPartyExposureMinor    BigInt
+  approvalRoutingExposureMinor BigInt
+  currency                     String
+  reason                       String // INITIAL | AMENDMENT
+  createdById                  String
+  createdAt                    DateTime    @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Workflow: transitions, stage intervals, review/approval cycles
+// ---------------------------------------------------------------------------
+
+model WorkflowEvent {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  action        String // see WORKFLOW_ACTIONS
+  fromDept      String?
+  fromSubstage  String?
+  toDept        String
+  toSubstage    String
+  actorId       String
+  actor         User        @relation(fields: [actorId], references: [id])
+  reason        String?
+  cycleRef      String? // ReviewCycle or ApprovalCycle id, when applicable
+  metadataJson  String? // small structured extras, JSON-encoded
+  createdAt     DateTime    @default(now())
+
+  @@index([applicationId])
+}
+
+// One row per continuous period an application spent in a given
+// department/stage/substage/owner. `endedAt` is null for the current period.
+// Used to compute stage age, cumulative departmental time, etc.
+model StageInterval {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  department    String
+  stage         String
+  substage      String
+  ownerUserId   String?
+  owner         User?       @relation(fields: [ownerUserId], references: [id])
+  startedAt     DateTime    @default(now())
+  endedAt       DateTime?
+
+  @@index([applicationId])
+}
+
+model ReviewCycle {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  cycleNumber   Int
+  startedAt     DateTime    @default(now())
+  endedAt       DateTime?
+  outcome       String? // CLEARED | RETURNED | IN_PROGRESS
+  queries       Query[]
+
+  @@unique([applicationId, cycleNumber])
+}
+
+model ApprovalCycle {
+  id                        String      @id @default(cuid())
+  applicationId             String
+  application               Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  cycleNumber               Int
+  startedAt                 DateTime    @default(now())
+  endedAt                   DateTime?
+  outcome                   String?
+  externalApprovalReference String?
+  queries                   Query[]
+
+  @@unique([applicationId, cycleNumber])
+}
+
+model Query {
+  id              String         @id @default(cuid())
+  applicationId   String
+  application     Application    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  source          String // RISK | APPROVAL_AUTHORITY
+  category        String?
+  reason          String
+  authorId        String
+  author          User           @relation(fields: [authorId], references: [id])
+  status          String         @default("OPEN") // OPEN | RESPONDED | CLOSED
+  reviewCycleId   String?
+  reviewCycle     ReviewCycle?   @relation(fields: [reviewCycleId], references: [id])
+  approvalCycleId String?
+  approvalCycle   ApprovalCycle? @relation(fields: [approvalCycleId], references: [id])
+  documentRefsJson String?
+  createdAt       DateTime       @default(now())
+
+  responses QueryResponse[]
+
+  @@index([applicationId])
+}
+
+model QueryResponse {
+  id               String   @id @default(cuid())
+  queryId          String
+  query            Query    @relation(fields: [queryId], references: [id], onDelete: Cascade)
+  authorId         String
+  author           User     @relation(fields: [authorId], references: [id])
+  message          String
+  documentRefsJson String?
+  createdAt        DateTime @default(now())
+}
+
+// A recorded external, real-world milestone (approval or execution). The
+// system tracks that this happened and by whom it was recorded; it does not
+// itself constitute or perform the banking decision.
+model ExternalMilestone {
+  id                  String      @id @default(cuid())
+  applicationId       String
+  application         Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  type                String // EXTERNAL_APPROVAL | EXTERNAL_EXECUTION
+  recordedById        String
+  recordedBy          User        @relation(fields: [recordedById], references: [id])
+  supportingReference String
+  notes               String?
+  recordedAt          DateTime    @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Documents, comments, notifications
+// ---------------------------------------------------------------------------
+
+model DocumentVersion {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  category      String // RM_SUBMISSION | RISK_REVIEW | APPROVAL_PACK | CAD_DOCUMENTS | OTHER
+  filename      String
+  mimeType      String
+  sizeBytes     Int
+  storageKey    String // relative path inside the private documents root
+  version       Int
+  checksum      String
+  uploadedById  String
+  uploadedBy    User        @relation(fields: [uploadedById], references: [id])
+  uploadedAt    DateTime    @default(now())
+
+  @@index([applicationId])
+}
+
+model Comment {
+  id             String      @id @default(cuid())
+  applicationId  String
+  application    Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  authorId       String
+  author         User        @relation(fields: [authorId], references: [id])
+  body           String
+  visibilityDept String? // null = visible per standard document/tracking rules
+  createdAt      DateTime    @default(now())
+
+  @@index([applicationId])
+}
+
+model Notification {
+  id            String       @id @default(cuid())
+  userId        String
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applicationId String?
+  application   Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  type          String
+  title         String
+  body          String
+  isRead        Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  readAt        DateTime?
+
+  @@index([userId, isRead])
+}
+
+// ---------------------------------------------------------------------------
+// Configuration (versioned) and audit
+// ---------------------------------------------------------------------------
+
+// Generic versioned configuration container. `configType` selects the shape
+// of `payloadJson`, which is validated against the matching Zod schema in
+// src/lib/config.ts before it is ever saved as DRAFT or promoted to ACTIVE.
+model ConfigVersion {
+  id            String   @id @default(cuid())
+  configType    String // ROUTING_MATRIX | TAT_PROFILE | CALENDAR | SUBTYPE_MAPPING | DOCUMENT_CHECKLIST | NOTIFICATION_PREFS | ASSIGNMENT_SCOPE
+  version       Int
+  status        String // DRAFT | ACTIVE | SUPERSEDED
+  payloadJson   String
+  notes         String?
+  effectiveFrom DateTime?
+  createdById   String
+  createdBy     User     @relation(fields: [createdById], references: [id])
+  createdAt     DateTime @default(now())
+
+  @@unique([configType, version])
+  @@index([configType, status])
+}
+
+model AuditEvent {
+  id              String       @id @default(cuid())
+  eventType       String
+  applicationId   String?
+  application     Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  actorId         String
+  actor           User         @relation(fields: [actorId], references: [id])
+  action          String
+  previousJson    String?
+  newJson         String?
+  reason          String?
+  cycleRef        String?
+  configVersionId String?
+  createdAt       DateTime     @default(now())
+
+  @@index([applicationId])
+  @@index([eventType])
+}
